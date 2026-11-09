@@ -42,7 +42,7 @@ internal sealed class ResolvedTemplate(
         if (result.Status != CreationResultStatus.Success)
         {
             string message = result.Status == CreationResultStatus.DestructiveChangesDetected
-                ? "The template would replace existing files. Enable replacement to continue."
+                ? "Container artifacts would replace existing files. Use --force to replace them."
                 : result.ErrorMessage ?? $"Template '{Entry.Identity}' could not be created ({result.Status}).";
             throw new TemplateInvocationException(message);
         }
