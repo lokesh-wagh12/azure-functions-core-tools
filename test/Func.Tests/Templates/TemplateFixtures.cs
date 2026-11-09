@@ -177,37 +177,51 @@ internal static class TemplateFixtures
     /// Writes a physical package containing an artifact template, and returns its path.
     /// </summary>
     public static string WriteArtifactPackage(string parentDirectory)
+        => WriteArtifactPackage(
+            parentDirectory,
+            [new(ArtifactTemplateIdentity, "container", "dotnet", "C#", "artifact.txt")]);
+
+    /// <summary>
+    /// Writes a physical package containing the requested artifact templates, and returns its path.
+    /// </summary>
+    public static string WriteArtifactPackage(string parentDirectory, IReadOnlyList<ArtifactTemplateFixture> templates)
     {
         string packageDirectory = Path.Combine(parentDirectory, "artifact-templates");
 
-        WriteTemplate(
-            Path.Combine(packageDirectory, "artifact"),
-            $$"""
-            {
-              "$schema": "http://json.schemastore.org/template",
-              "author": "func-tests",
-              "identity": "{{ArtifactTemplateIdentity}}",
-              "name": "Func Tests Artifact",
-              "shortName": "func-tests-artifact",
-              "tags": {
-                "type": "artifact",
-                "language": "C#",
-                "func-stack": "dotnet",
-                "func-capability": "container"
-              },
-              "symbols": {
-                "Runtime": {
-                  "type": "parameter",
-                  "datatype": "choice",
-                  "isRequired": true,
-                  "choices": [ { "choice": "8.0" }, { "choice": "9.0" } ],
-                  "replaces": "__RUNTIME__"
+        foreach (ArtifactTemplateFixture template in templates)
+        {
+            string languageTag = template.Language is null
+                ? string.Empty
+                : $""","language": "{template.Language}" """;
+            WriteTemplate(
+                Path.Combine(packageDirectory, template.Identity.Replace('.', '-')),
+                $$"""
+                {
+                  "$schema": "http://json.schemastore.org/template",
+                  "author": "func-tests",
+                  "identity": "{{template.Identity}}",
+                  "name": "Func Tests Artifact",
+                  "shortName": "func-tests-artifact",
+                  "tags": {
+                    "type": "artifact",
+                    "func-stack": "{{template.Stack}}",
+                    "func-capability": "{{template.Capability}}"
+                    {{languageTag}}
+                  },
+                  "symbols": {
+                    "Runtime": {
+                      "type": "parameter",
+                      "datatype": "choice",
+                      "isRequired": true,
+                      "choices": [ { "choice": "8.0" }, { "choice": "9.0" } ],
+                      "replaces": "__RUNTIME__"
+                    }
+                  }
                 }
-              }
-            }
-            """,
-            ("artifact.txt", "runtime=__RUNTIME__"),
-            ("func.host.json", """{ "symbolInfo": { "Runtime": { "longName": "runtime", "shortName": "r" } } }"""));
+                """,
+                (template.OutputFileName, "runtime=__RUNTIME__"),
+                ("func.host.json", $$"""{ "symbolInfo": { "Runtime": { "longName": "{{template.ArgumentName}}", "shortName": "r" } } }"""));
+        }
 
         return packageDirectory;
     }
@@ -260,3 +274,11 @@ internal static class TemplateFixtures
         File.WriteAllText(Path.Combine(templateDirectory, contentFile.Name), contentFile.Content);
     }
 }
+
+internal sealed record ArtifactTemplateFixture(
+    string Identity,
+    string Capability,
+    string Stack,
+    string? Language,
+    string OutputFileName,
+    string ArgumentName = "runtime");
