@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "Microsoft",
+  "identity": "Azure.Functions.Cli.PowerShell.FlexByoc",
+  "name": "PowerShell Flex BYOC container artifacts",
+  "shortName": "flex-byoc",
+  "precedence": 100,
+  "tags": {
+    "type": "artifact",
+    "func-capability": "flex-byoc",
+    "func-stack": "powershell"
+  },
+  "symbols": {
+    "RuntimeVersion": {
+      "type": "parameter",
+      "datatype": "choice",
+      "defaultValue": "7.6",
+      "replaces": "{{RUNTIME_VERSION}}",
+      "choices": [
+        { "choice": "7.2" },
+        { "choice": "7.4" },
+        { "choice": "7.6" }
+      ]
+    },
+    "RuntimeImage": {
+      "type": "generated",
+      "generator": "switch",
+      "replaces": "{{RUNTIME_IMAGE}}",
+      "parameters": {
+        "cases": [
+          { "condition": "(RuntimeVersion == \"7.2\")", "value": "mcr.microsoft.com/powershell:7.2-ubuntu-22.04" },
+          { "condition": "(RuntimeVersion == \"7.4\")", "value": "mcr.microsoft.com/powershell:7.4-ubuntu-22.04" },
+          { "condition": "(RuntimeVersion == \"7.6\")", "value": "mcr.microsoft.com/powershell:preview-7.6-ubuntu-24.04" }
+        ]
+      }
+    },
+    "WorkerPackageId": {
+      "type": "generated",
+      "generator": "switch",
+      "replaces": "{{WORKER_PACKAGE_ID}}",
+      "parameters": {
+        "cases": [
+          { "condition": "(RuntimeVersion == \"7.2\")", "value": "Microsoft.Azure.Functions.PowerShellWorker.PS7.2" },
+          { "condition": "(RuntimeVersion == \"7.4\")", "value": "Microsoft.Azure.Functions.PowerShellWorker.PS7.4" },
+          { "condition": "(RuntimeVersion == \"7.6\")", "value": "Microsoft.Azure.Functions.PowerShellWorker.PS7.6" }
+        ]
+      }
+    },
+    "WorkerPackageVersion": {
+      "type": "generated",
+      "generator": "switch",
+      "replaces": "{{WORKER_PACKAGE_VERSION}}",
+      "parameters": {
+        "cases": [
+          { "condition": "(RuntimeVersion == \"7.2\")", "value": "4.0.4025" },
+          { "condition": "(RuntimeVersion == \"7.4\")", "value": "4.0.5361" },
+          { "condition": "(RuntimeVersion == \"7.6\")", "value": "4.0.5362" }
+        ]
+      }
+    },
+    "WorkerPackageFeed": {
+      "type": "generated",
+      "generator": "switch",
+      "replaces": "{{WORKER_PACKAGE_FEED}}",
+      "parameters": {
+        "cases": [
+          {
+            "condition": "(RuntimeVersion == \"7.2\")",
+            "value": "https://azfunc.pkgs.visualstudio.com/e6a70c92-4128-439f-8012-382fe78d6396/_packaging/Microsoft.Azure.Functions.PowerShellWorker/nuget/v3/index.json"
+          },
+          {
+            "condition": "(RuntimeVersion == \"7.4\")",
+            "value": "https://pkgs.dev.azure.com/azfunc/public/_packaging/infra/nuget/v3/index.json"
+          },
+          {
+            "condition": "(RuntimeVersion == \"7.6\")",
+            "value": "https://pkgs.dev.azure.com/azfunc/public/_packaging/infra/nuget/v3/index.json"
+          }
+        ]
+      }
+    },
+    "WorkerPackagePath": {
+      "type": "generated",
+      "generator": "switch",
+      "replaces": "{{WORKER_PACKAGE_PATH}}",
+      "parameters": {
+        "cases": [
+          {
+            "condition": "(RuntimeVersion == \"7.2\")",
+            "value": "microsoft.azure.functions.powershellworker.ps7.2/4.0.4025/contentFiles/any/any/workers/powershell"
+          },
+          {
+            "condition": "(RuntimeVersion == \"7.4\")",
+            "value": "microsoft.azure.functions.powershellworker.ps7.4/4.0.5361/contentFiles/any/any/workers/powershell"
+          },
+          {
+            "condition": "(RuntimeVersion == \"7.6\")",
+            "value": "microsoft.azure.functions.powershellworker.ps7.6/4.0.5362/contentFiles/any/any/workers/powershell"
+          }
+        ]
+      }
+    }
+  },
+  "sources": [
+    {
+      "source": "Shared",
+      "target": "",
+      "modifiers": [
+        {
+          "rename": {
+            "Dockerfile.template": "Dockerfile",
+            "dockerignore.template": ".dockerignore"
+          }
+        }
+      ]
+    }
+  ]
+}
