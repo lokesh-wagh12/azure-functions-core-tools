@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
 using System.CommandLine;
+using System.CommandLine.Parsing;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Azure.Functions.Cli.Bundles;
@@ -10,6 +11,9 @@ using Azure.Functions.Cli.Configuration;
 using Azure.Functions.Cli.Console;
 using Azure.Functions.Cli.Hosting;
 using Azure.Functions.Cli.Projects;
+using Azure.Functions.Cli.Templates.Integration;
+using Azure.Functions.Cli.Templates.Preparation;
+using Azure.Functions.Cli.Templates.Selection;
 using Azure.Functions.Cli.Workloads;
 
 namespace Azure.Functions.Cli.Commands;
@@ -53,6 +57,26 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         Description = "Re-initialize the directory: deletes its contents (except .git) before scaffolding the new project."
     };
 
+    public Option<bool> DockerOption { get; } = new("--docker")
+    {
+        Description = "Generate container artifacts after initializing the project."
+    };
+
+    public Option<bool> DockerOnlyOption { get; } = new("--docker-only")
+    {
+        Description = "Generate container artifacts for an existing project without initializing it."
+    };
+
+    public Option<bool> FlexByocOption { get; } = new("--flex-byoc")
+    {
+        Description = "Generate Flex Consumption bring-your-own-container artifacts. Requires --docker or --docker-only."
+    };
+
+    public Option<bool> DryRunOption { get; } = new("--dry-run")
+    {
+        Description = "Preview container artifact changes without writing files. Requires --docker-only."
+    };
+
     private readonly IInteractionService _interaction;
     private readonly IWorkloadHintRenderer _hintRenderer;
     private readonly ILocalSettingsProvider _localSettingsProvider;
@@ -60,6 +84,8 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
     private readonly IHostJsonBundleSectionReader _bundleSectionReader;
     private readonly InstalledBundleScanner _bundleScanner;
     private readonly IReadOnlyList<IProjectInitializer> _initializers;
+    private readonly IReadOnlyList<Option> _initializerOptions;
+    private readonly IWorkloadTemplateApplication? _templates;
 
     public InitCommand(
         IInteractionService interaction,
@@ -68,7 +94,8 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         IFunctionsProjectResolver projectResolver,
         IHostJsonBundleSectionReader bundleSectionReader,
         InstalledBundleScanner bundleScanner,
-        IEnumerable<IProjectInitializer> initializers)
+        IEnumerable<IProjectInitializer> initializers,
+        IWorkloadTemplateApplication? templates = null)
         : base("init", "Initialize a new Azure Functions project.")
     {
         ArgumentNullException.ThrowIfNull(interaction);
@@ -86,6 +113,8 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         _bundleSectionReader = bundleSectionReader;
         _bundleScanner = bundleScanner;
         _initializers = initializers.ToList();
+        _templates = templates;
+        TreatUnmatchedTokensAsErrors = false;
 
         StackOption.Description = BuildStackOptionDescription(_initializers);
         LanguageOption.Description = BuildLanguageOptionDescription(_initializers);
@@ -95,19 +124,59 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         Options.Add(NameOption);
         Options.Add(LanguageOption);
         Options.Add(ForceOption);
+        Options.Add(DockerOption);
+        Options.Add(DockerOnlyOption);
+        Options.Add(FlexByocOption);
+        Options.Add(DryRunOption);
+
+        Validators.Add(result =>
+        {
+            bool docker = result.GetValue(DockerOption);
+            bool dockerOnly = result.GetValue(DockerOnlyOption);
+            bool flexByoc = result.GetValue(FlexByocOption);
+            bool dryRun = result.GetValue(DryRunOption);
+
+            if (docker && dockerOnly)
+            {
+                result.AddError("--docker and --docker-only are mutually exclusive.");
+                return;
+            }
+
+            if (flexByoc && !docker && !dockerOnly)
+            {
+                result.AddError("--flex-byoc requires either --docker or --docker-only.");
+                return;
+            }
+
+            if (dryRun && !dockerOnly)
+            {
+                result.AddError("--dry-run currently requires --docker-only.");
+            }
+        });
 
         // The registry shares canonical instances across workloads; help uses
         // their ownership to distinguish shared options from stack-specific ones.
         var registry = new InitOptionRegistry(this);
+        List<Option> initializerOptions = [];
         foreach (IProjectInitializer initializer in _initializers)
         {
             registry.SetActiveStack(initializer.Stack);
             IReadOnlyList<Option> options = initializer.GetInitOptions(registry);
+            foreach (Option option in options)
+            {
+                if (!initializerOptions.Contains(option))
+                {
+                    initializerOptions.Add(option);
+                }
+            }
+
             // Bundle options stay general even when only one bundle-using stack is installed.
             RegisterStackOptionHelp(initializer.Stack, initializer.DisplayName,
                 options.Where(option => option.Name != CommonInitOptions.NoBundleOptionName
                     && option.Name != CommonInitOptions.BundlesChannelOptionName));
         }
+
+        _initializerOptions = initializerOptions;
     }
 
     protected override async Task<int> ExecuteAsync(ParseResult parseResult, CancellationToken cancellationToken)
@@ -129,7 +198,46 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
                 "Run `func workload list` to see them, then `func workload uninstall <name>` to remove one.");
         }
 
+        bool docker = parseResult.GetValue(DockerOption);
+        bool dockerOnly = parseResult.GetValue(DockerOnlyOption);
+        bool generateContainerArtifacts = docker || dockerOnly;
+        bool dryRun = parseResult.GetValue(DryRunOption);
+        string capability = parseResult.GetValue(FlexByocOption) ? "flex-byoc" : "docker";
+        IReadOnlyList<string> templateArguments = parseResult.UnmatchedTokens;
+        IReadOnlyDictionary<string, string> nativeOptionValues = GetExplicitInitializerOptionValues(parseResult);
+
+        if (!generateContainerArtifacts && templateArguments.Count > 0)
+        {
+            _interaction.WriteError($"Unrecognized argument: {templateArguments[0]}.");
+            return 1;
+        }
+
         WorkingDirectory workingDirectory = parseResult.GetValue(PathArgument!)!;
+        if (dockerOnly)
+        {
+            if (!workingDirectory.Exists)
+            {
+                string displayPath = workingDirectory.OriginalPath ?? workingDirectory.Info.FullName;
+                _interaction.WriteError($"The specified project path does not exist: '{displayPath}'.");
+                return 1;
+            }
+
+            FunctionsProject project = await ResolveContainerProjectAsync(workingDirectory, cancellationToken);
+            WorkloadTemplateSelection selection = await SelectContainerTemplateAsync(
+                project.StackName,
+                project.Language,
+                capability,
+                templateArguments,
+                nativeOptionValues,
+                cancellationToken);
+            return await GenerateContainerArtifactsAsync(
+                project,
+                selection,
+                parseResult.GetValue(ForceOption),
+                dryRun,
+                cancellationToken);
+        }
+
         workingDirectory.CreateIfNotExists();
         bool force = parseResult.GetValue(ForceOption);
         string? language = parseResult.GetValue(LanguageOption);
@@ -282,6 +390,18 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
             language = resolved;
         }
 
+        WorkloadTemplateSelection? containerSelection = null;
+        if (generateContainerArtifacts)
+        {
+            containerSelection = await SelectContainerTemplateAsync(
+                initializer.Stack,
+                language,
+                capability,
+                templateArguments,
+                nativeOptionValues,
+                cancellationToken);
+        }
+
         if (force)
         {
             if (!await ConfirmClearDirectoryAsync(workingDirectory.Info, cancellationToken))
@@ -310,7 +430,14 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
                 .Muted("Existing project completed for ")
                 .Code(initializer.Stack)
                 .Muted("."));
-            return 0;
+            return containerSelection is null
+                ? 0
+                : await GenerateContainerArtifactsAsync(
+                    await ResolveContainerProjectAsync(workingDirectory, cancellationToken),
+                    containerSelection,
+                    force,
+                    dryRun,
+                    cancellationToken);
         }
 
         WriteCliConfigurationFile(workingDirectory.Info, initializer.Stack, persistedLanguage, force);
@@ -324,7 +451,14 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
                 .Code(initializer.Stack)
                 .Muted("."));
 
-            return 0;
+            return containerSelection is null
+                ? 0
+                : await GenerateContainerArtifactsAsync(
+                    await ResolveContainerProjectAsync(workingDirectory, cancellationToken),
+                    containerSelection,
+                    force,
+                    dryRun,
+                    cancellationToken);
         }
 
         var context = new InitContext(
@@ -343,7 +477,121 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
 
         await WarnIfBundleChannelNotInstalledAsync(workingDirectory.Info, cancellationToken);
 
-        return 0;
+        return containerSelection is null
+            ? 0
+            : await GenerateContainerArtifactsAsync(
+                await ResolveContainerProjectAsync(workingDirectory, cancellationToken),
+                containerSelection,
+                force,
+                dryRun,
+                cancellationToken);
+    }
+
+    private async Task<WorkloadTemplateSelection> SelectContainerTemplateAsync(
+        string stack,
+        string? language,
+        string capability,
+        IReadOnlyList<string> templateArguments,
+        IReadOnlyDictionary<string, string> nativeOptionValues,
+        CancellationToken cancellationToken)
+    {
+        // TODO(#5814 follow-up): land the workload-aware selection boundary that resolves installed workload
+        // packages by capability while accepting unmatched template arguments and matching explicit native options.
+        IWorkloadTemplateApplication templates = _templates
+            ?? throw new InvalidOperationException("The shared workload template application is not registered.");
+        WorkloadTemplateSelectionRequest request = new(
+            Capability: capability,
+            Stack: stack,
+            Language: language,
+            Arguments: templateArguments,
+            NativeOptionValues: nativeOptionValues);
+        return await templates.SelectAsync(request, cancellationToken);
+    }
+
+    private async Task<FunctionsProject> ResolveContainerProjectAsync(
+        WorkingDirectory workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        ProjectResolutionResult resolution = await _projectResolver.ResolveProjectAsync(
+            new ProjectResolutionContext(workingDirectory),
+            cancellationToken);
+        if (resolution is ProjectResolutionResult.Resolved resolved)
+        {
+            return resolved.Project;
+        }
+
+        var notResolved = (ProjectResolutionResult.NotResolved)resolution;
+        throw new GracefulException(
+            $"Could not resolve a Functions project for container generation: {notResolved.Message}",
+            isUserError: true);
+    }
+
+    private async Task<int> GenerateContainerArtifactsAsync(
+        FunctionsProject project,
+        WorkloadTemplateSelection selection,
+        bool force,
+        bool dryRun,
+        CancellationToken cancellationToken)
+    {
+        IWorkloadTemplateApplication templates = _templates
+            ?? throw new InvalidOperationException("The shared workload template application is not registered.");
+
+        // TODO(#5814 follow-up): extend prepared publication with explicit create-only/replace-existing policy.
+        // The command must not inspect or publish files itself; collisions remain a shared preparation concern.
+        TemplatePublicationMode publicationMode = force
+            ? TemplatePublicationMode.ReplaceExisting
+            : TemplatePublicationMode.CreateOnly;
+        WorkloadTemplatePreparationRequest request = new(
+            selection,
+            project,
+            project.WorkingDirectory.Info.FullName,
+            publicationMode);
+
+        try
+        {
+            await using WorkloadTemplateOperation operation = await templates.PrepareAsync(request, cancellationToken);
+            PreparedOperationPlan plan = operation.Preview();
+            string verb = dryRun ? "Would generate" : "Generated";
+            if (!dryRun)
+            {
+                await operation.CommitAsync(cancellationToken);
+            }
+
+            _interaction.WriteLine(l => l
+                .Success("✓ ")
+                .Muted($"{verb} {plan.Entries.Count} container ")
+                .Muted(plan.Entries.Count == 1 ? "artifact" : "artifacts")
+                .Muted(" for ")
+                .Code(project.StackDisplayName)
+                .Muted("."));
+            return 0;
+        }
+        catch (TemplatePublicationCollisionException ex)
+        {
+            throw new GracefulException(
+                $"{ex.Message} Use --force to replace existing container artifacts.",
+                ex,
+                isUserError: true);
+        }
+        catch (TemplatePreparationException ex)
+        {
+            throw new GracefulException(ex.Message, ex, isUserError: true);
+        }
+    }
+
+    private IReadOnlyDictionary<string, string> GetExplicitInitializerOptionValues(ParseResult parseResult)
+    {
+        Dictionary<string, string> values = new(StringComparer.OrdinalIgnoreCase);
+        foreach (Option option in _initializerOptions)
+        {
+            OptionResult? result = parseResult.GetResult(option);
+            if (result?.Tokens.Count == 1)
+            {
+                values[option.Name] = result.Tokens[0].Value;
+            }
+        }
+
+        return values;
     }
 
     // A fresh scaffold may pin a preview/experimental bundle channel (via `-c`).
