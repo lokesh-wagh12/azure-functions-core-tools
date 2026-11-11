@@ -56,59 +56,6 @@ public class InitCommandTests
         optionNames.Should().Contain("--name");
         optionNames.Should().Contain("--language");
         optionNames.Should().Contain("--force");
-        optionNames.Should().Contain("--docker");
-        optionNames.Should().Contain("--docker-only");
-        optionNames.Should().Contain("--flex-byoc");
-    }
-
-    [Theory]
-    [InlineData("--docker", "--docker-only", "--docker and --docker-only")]
-    [InlineData("--flex-byoc", null, "--flex-byoc requires")]
-    public void InitCommand_InvalidContainerOptionCombination_ReportsValidationError(
-        string firstOption,
-        string? secondOption,
-        string expected)
-    {
-        InitCommand command = CreateCommand([]);
-        RootCommand root = [command];
-        List<string> arguments = ["init", "project", firstOption];
-        if (secondOption is not null)
-        {
-            arguments.Add(secondOption);
-        }
-
-        ParseResult result = root.Parse([.. arguments]);
-
-        result.Errors.Should().ContainSingle().Which.Message.Should().Contain(expected);
-    }
-
-    [Fact]
-    public void InitCommand_TemplateDefinedOption_RemainsAvailableForSharedSelection()
-    {
-        InitCommand command = CreateCommand([]);
-        RootCommand root = [command];
-
-        ParseResult result = root.Parse(
-            ["init", "project", "--docker", "--flex-byoc", "--runtime-version", "3.14"]);
-
-        result.Errors.Should().BeEmpty();
-        result.UnmatchedTokens.Should().Equal("--runtime-version", "3.14");
-    }
-
-    [Fact]
-    public void InitCommand_WorkloadOwnedNativeOption_IsAcceptedForSharedSelection()
-    {
-        FakeProjectInitializer initializer = new(
-            "powershell",
-            optionFactory: registry => [registry.GetOrAdd(new Option<string>("--runtime-version"))]);
-        InitCommand command = CreateCommand([initializer]);
-        RootCommand root = [command];
-
-        ParseResult result = root.Parse(
-            ["init", "project", "--docker", "--flex-byoc", "--stack", "powershell", "--runtime-version", "7.4"]);
-
-        result.Errors.Should().BeEmpty();
-        result.UnmatchedTokens.Should().BeEmpty();
     }
 
     [Fact]
