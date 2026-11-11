@@ -72,11 +72,6 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         Description = "Generate Flex Consumption bring-your-own-container artifacts. Requires --docker or --docker-only."
     };
 
-    public Option<bool> DryRunOption { get; } = new("--dry-run")
-    {
-        Description = "Preview container artifact changes without writing files. Requires --docker-only."
-    };
-
     private readonly IInteractionService _interaction;
     private readonly IWorkloadHintRenderer _hintRenderer;
     private readonly ILocalSettingsProvider _localSettingsProvider;
@@ -127,14 +122,12 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         Options.Add(DockerOption);
         Options.Add(DockerOnlyOption);
         Options.Add(FlexByocOption);
-        Options.Add(DryRunOption);
 
         Validators.Add(result =>
         {
             bool docker = result.GetValue(DockerOption);
             bool dockerOnly = result.GetValue(DockerOnlyOption);
             bool flexByoc = result.GetValue(FlexByocOption);
-            bool dryRun = result.GetValue(DryRunOption);
 
             if (docker && dockerOnly)
             {
@@ -145,12 +138,6 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
             if (flexByoc && !docker && !dockerOnly)
             {
                 result.AddError("--flex-byoc requires either --docker or --docker-only.");
-                return;
-            }
-
-            if (dryRun && !dockerOnly)
-            {
-                result.AddError("--dry-run currently requires --docker-only.");
             }
         });
 
@@ -201,7 +188,6 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         bool docker = parseResult.GetValue(DockerOption);
         bool dockerOnly = parseResult.GetValue(DockerOnlyOption);
         bool generateContainerArtifacts = docker || dockerOnly;
-        bool dryRun = parseResult.GetValue(DryRunOption);
         string capability = parseResult.GetValue(FlexByocOption) ? "flex-byoc" : "docker";
         IReadOnlyList<string> templateArguments = parseResult.UnmatchedTokens;
         IReadOnlyDictionary<string, string> nativeOptionValues = GetExplicitInitializerOptionValues(parseResult);
@@ -234,7 +220,6 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
                 project,
                 selection,
                 parseResult.GetValue(ForceOption),
-                dryRun,
                 cancellationToken);
         }
 
@@ -436,7 +421,6 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
                     await ResolveContainerProjectAsync(workingDirectory, cancellationToken),
                     containerSelection,
                     force,
-                    dryRun,
                     cancellationToken);
         }
 
@@ -457,7 +441,6 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
                     await ResolveContainerProjectAsync(workingDirectory, cancellationToken),
                     containerSelection,
                     force,
-                    dryRun,
                     cancellationToken);
         }
 
@@ -483,7 +466,6 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
                 await ResolveContainerProjectAsync(workingDirectory, cancellationToken),
                 containerSelection,
                 force,
-                dryRun,
                 cancellationToken);
     }
 
@@ -530,7 +512,6 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         FunctionsProject project,
         WorkloadTemplateSelection selection,
         bool force,
-        bool dryRun,
         CancellationToken cancellationToken)
     {
         IWorkloadTemplateApplication templates = _templates
@@ -551,15 +532,11 @@ internal class InitCommand : FuncCliCommand, IBuiltInCommand
         {
             await using WorkloadTemplateOperation operation = await templates.PrepareAsync(request, cancellationToken);
             PreparedOperationPlan plan = operation.Preview();
-            string verb = dryRun ? "Would generate" : "Generated";
-            if (!dryRun)
-            {
-                await operation.CommitAsync(cancellationToken);
-            }
+            await operation.CommitAsync(cancellationToken);
 
             _interaction.WriteLine(l => l
                 .Success("✓ ")
-                .Muted($"{verb} {plan.Entries.Count} container ")
+                .Muted($"Generated {plan.Entries.Count} container ")
                 .Muted(plan.Entries.Count == 1 ? "artifact" : "artifacts")
                 .Muted(" for ")
                 .Code(project.StackDisplayName)

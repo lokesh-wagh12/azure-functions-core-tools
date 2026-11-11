@@ -59,13 +59,11 @@ public class InitCommandTests
         optionNames.Should().Contain("--docker");
         optionNames.Should().Contain("--docker-only");
         optionNames.Should().Contain("--flex-byoc");
-        optionNames.Should().Contain("--dry-run");
     }
 
     [Theory]
     [InlineData("--docker", "--docker-only", "--docker and --docker-only")]
     [InlineData("--flex-byoc", null, "--flex-byoc requires")]
-    [InlineData("--docker", "--dry-run", "--dry-run currently requires --docker-only")]
     public void InitCommand_InvalidContainerOptionCombination_ReportsValidationError(
         string firstOption,
         string? secondOption,
